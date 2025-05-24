@@ -11,4 +11,6 @@ pip install -r requirements.txt
 
 ### 2 QUICK START
 
-todo
+```sh
+python3 main.py --MyId=1
+```

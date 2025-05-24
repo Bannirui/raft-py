@@ -1,0 +1,19 @@
+# for project
+debug = true
+version = "1.0.0"
+
+# 集群服务器配置 通过启动参数--MyId检索集群配置的id
+[[servers]]
+id=1
+ip = "127.0.0.1"
+port = 9527
+
+[[servers]]
+id=2
+ip = "127.0.0.1"
+port = 9528
+
+[[servers]]
+id=3
+ip = "127.0.0.1"
+port = 9529

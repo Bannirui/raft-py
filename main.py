@@ -1,9 +1,8 @@
 from argparse import ArgumentParser
 
-# 集群服务器配置
-from conf import cluster_servers
+from conf import app_cfg, ServerConfig
 
-parser = ArgumentParser(description="Raft Server")
+parser = ArgumentParser(description = "Raft Server")
 parser.add_argument(
     "--MyId",
     type=int,
@@ -12,13 +11,22 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-def main()->None:
+def main() -> None:
     """
     启动参数--MyId指定当前实例作为集群中的节点id
     在配置文件中指定集群启动节点配置{id, ip, port}
     """
-    print(f"当前节点id={args.MyId}")
-    [print(f"集群服务器配置={ser}") for ser in cluster_servers]
+    # 当前节点
+    my_id: int = args.MyId
+    servers: list = app_cfg.servers
+    assert servers, f"集群服务器配置不能为空"
+    # 集群配置
+    cluster_server_map: dict = {ser.id:ser for ser in servers}
+    # 启动的id
+    my_conf: ServerConfig | None = None
+    if (my_conf := cluster_server_map.get(my_id)) is None:
+        raise ValueError(f"集群配置是{servers} 当前启动的MyId为{my_id}是无效的")
+    print(my_conf)
 
 if __name__ == '__main__':
     main()

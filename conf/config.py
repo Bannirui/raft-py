@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import List
 import tomllib
 
 class ServerConfig(BaseModel):
@@ -15,7 +14,7 @@ class ProjConfig(BaseModel):
     项目配置
     """
     # 集群节点服务器配置
-    servers: List[ServerConfig]
+    servers: list[ServerConfig]
 
 class ConfigLoader:
     """

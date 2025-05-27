@@ -2,18 +2,21 @@ from socket import socket, AF_INET, SOCK_DGRAM, SOL_SOCKET, SO_REUSEADDR
 from random import uniform
 from time import time
 from select import select
-from pydantic import BaseModel, NonNegativeInt
+from pydantic import BaseModel, NonNegativeInt, ValidationError
 
 from conf import ServerConfig
 from role import Role, Candidator, Follower, Leader
-from role.rpc import VoteReq
-from util import Address, RPC, RPC_Direction, RPC_Type
+from role.rpc import VoteReq, VoteResp, AppendEntryReq, AppendEntryResp
+from util import Address, RPC, RPC_Direction, RPC_Type, FrozenModel
 
 # 超时区间[5...8]s
 TIMEOUT_SECOND_LO: float = 1
 TIMEOUT_SECOND_HI: float = 3
 
-class Server:
+class _CaptureTerm(FrozenModel):
+    term: NonNegativeInt|None=None
+
+class Server():
     # 当前节点id
     id: int
     # 集群中各个节点的配置
@@ -74,9 +77,25 @@ class Server:
         return isinstance(self._role, Leader)
 
     def start_heartbeat(self) -> None:
+        """
+        向follower发送心跳 维持自己leader地位
+        """
         # 角色类型检查
         if not isinstance(self._role, Leader):
             return
+        match_indices = self._role.match_idx.values()
+        N: int = min(match_indices)
+        while(
+            N<len(self._role.log)
+            and N>self._role.commit_idx
+            and sum(idx>=N for idx in match_indices)*2>len(self.peers)
+            and self._role.log[N].term==self._role.cur_term
+        ):
+            self._role.commit_idx=N
+            N+=1
+
+        self._rpc_send_append_entries()
+        self._timeout_reset(leader=True)
 
     def start_election(self) -> None:
         """follower超时到了 参与竞选leader"""
@@ -118,8 +137,50 @@ class Server:
             except Exception as e:
                 print(f"socket发送失败{e}")
 
-    def rpc_handle(self) -> None:
-        # todo
+    def rpc_handle(self, rpc: RPC, sender: Address) -> None:
+        """
+        收到了来自别人的请求
+        Args:
+            rpc 收到的数据
+            sender 谁发来的
+        """
+        try:
+            self._role_demote_if_necessary(_CaptureTerm.parse_raw(rpc.content))
+            if rpc.direction==RPC_Direction.REQUEST:
+                res:RPC=None
+                match rpc.type:
+                    case RPC_Type.APPEND_ENTRIES:
+                        res=self._rpc_handle_append_entries_request(AppendEntryReq.parse_raw(rpc.content))
+                    case RPC_Type.REQUEST_VOTE:
+                        res=self._rpc_handle_request_vote_reqeust(VoteReq.parse_raw(rpc.content))
+                    case _:
+                        raise NotImplementedError(f"rpc type={rpc.type}尚不支持")
+                if isinstance(res, RPC):
+                    self._rpc_send(res, sender)
+            elif rpc.direction==RPC_Direction.RESPONSE:
+                match rpc.type:
+                    case RPC_Type.APPEND_ENTRIES:
+                        self._rpc_handle_append_entries_response(AppendEntryResp.parse_raw(rpc.content), sender)
+                    case RPC_Type.REQUEST_VOTE:
+                        res=self._rpc_handle_request_vote_response(VoteResp.parse_raw(rpc.content), sender)
+                    case _:
+                        raise NotImplementedError(f"rpc type={rpc.type}尚不支持")
+        except ValidationError as e:
+            print(f"收到的请求不合法{e}")
+        except NotImplementedError as e:
+            print(f"异常{e}")
+        except:
+            print("未知异常")
+
+    def _rpc_handle_append_entries_request(self, ):
+        pass
+    def _rpc_handle_append_entries_response(self, ):
+        pass
+
+    def _rpc_handle_request_vote_reqeust(self):
+        pass
+
+    def _rpc_handle_request_vote_response(self):
         pass
 
     def commit(self) -> None:

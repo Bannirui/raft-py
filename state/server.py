@@ -9,7 +9,7 @@ from role import Role, Candidator, Follower, Leader
 from role.rpc import VoteReq, VoteResp, AppendEntryReq, AppendEntryResp
 from util import Address, RPC, RPC_Direction, RPC_Type, FrozenModel
 
-# 超时区间[5...8]s
+# 超时区间[lo...hi]s
 TIMEOUT_SECOND_LO: float = 1
 TIMEOUT_SECOND_HI: float = 3
 

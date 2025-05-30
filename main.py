@@ -2,7 +2,7 @@ from argparse import ArgumentParser
 
 from conf import app_cfg, ServerConfig
 from state import Server
-from role import *
+from log import logger
 
 parser = ArgumentParser(description = "Raft Server")
 parser.add_argument(
@@ -25,12 +25,11 @@ def main() -> None:
     # 集群配置
     cluster_server_map: dict = {ser.id:ser for ser in servers}
     # 启动的id
-    my_conf: ServerConfig | None = None
     if (my_conf := cluster_server_map.get(my_id)) is None:
         raise ValueError(f"集群配置是{servers} 当前启动的MyId为{my_id}是无效的")
     with Server(id=my_conf.id, peers=servers) as server:
         server.start()
-    print("服务退出")
+    logger.info("服务退出")
 
 if __name__ == '__main__':
     main()

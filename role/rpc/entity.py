@@ -2,6 +2,7 @@ from pydantic import NonNegativeInt, StrictBool
 
 from util import Address
 from util.model import FrozenModel
+from db import Entry
 
 class BaseRPC(FrozenModel):
     pass
@@ -23,6 +24,7 @@ class AppendEntryReq(BaseRPC):
     leader_identity: Address
     prev_log_idx: NonNegativeInt
     prev_log_term: NonNegativeInt
+    entries: list[Entry]
     leader_commit_idx: NonNegativeInt
 
 class AppendEntryResp(BaseRPC):

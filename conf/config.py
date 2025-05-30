@@ -15,6 +15,9 @@ class ProjConfig(BaseModel):
     """
     # 集群节点服务器配置
     servers: list[ServerConfig]
+    # 集群节点超时
+    timeout_second_lo: float
+    timeout_second_hi: float
 
 class ConfigLoader:
     """

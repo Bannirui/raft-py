@@ -2,6 +2,10 @@
 debug = true
 version = "1.0.0"
 
+# 节点超时间隔区间[lo...hi]秒
+timeout_second_lo = 5
+timeout_second_hi = 8
+
 # 集群服务器配置 通过启动参数--MyId检索集群配置的id
 [[servers]]
 id=1

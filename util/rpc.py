@@ -7,6 +7,7 @@ class RPC_Direction(IntEnum):
     REQUEST = 1
     RESPONSE = 1<<1
 class RPC_Type(IntEnum):
+    # raft的核心 leader通过append entries方式向follower发送entry
     APPEND_ENTRIES = 1
     # 拉票请求
     REQUEST_VOTE = 1<<1

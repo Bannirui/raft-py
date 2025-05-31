@@ -22,6 +22,11 @@ class Server:
     id: int
     # 集群中各个节点的配置
     peers: list[ServerConfig]
+    """
+    节点作为Leader向集群其他节点发送的复制日志数量
+    key-the Follower
+    val-count for Append Entries which have been sent to Follower
+    """
     _peers_sent: dict[Address, int]
     # 当前节点的配置
     cfg: ServerConfig
@@ -106,7 +111,7 @@ class Server:
         self._role_promote_to_candidate()
         self_sock_addr: Address = self._id()
         self._role.update_voted_for(self_sock_addr)
-        # 得票箱
+        # 得票箱 每一轮选举都重置一下
         self._votes = {self_sock_addr}
         self._timeout_reset()
         # 要socket发送的信息
@@ -154,6 +159,7 @@ class Server:
             if rpc.direction == RPC_Direction.REQUEST:
                 res: RPC
                 if rpc.type == RPC_Type.APPEND_ENTRIES:
+                    # Candidate或Follower收到了Leader的Append Entries
                     res = self._rpc_handle_append_entries_request(AppendEntryReq.parse_raw(rpc.content))
                 elif rpc.type == RPC_Type.REQUEST_VOTE:
                     # 处理别人拉票
@@ -177,22 +183,47 @@ class Server:
             logger.error("未知异常")
 
     def _rpc_handle_append_entries_request(self, req: AppendEntryReq) -> RPC:
+        """
+        对于Leader而言核心就是Append Entries RPC的调用
+        这个调用承载着3个作用
+        1 心跳heartbeat---如果没有新的entry 也会定期发送空的AppendEntries以维持领导地位
+        2 复制日志entry---把客户端请求封装的entry发送出去 等待follower追加
+        3 提交日志commit---告诉follower哪些entry已被集群大多数节点确认并可以提交到状态机
+
+        follower收到这些entry后先追加日志
+        然后follower执行完这个方法会尝试扫描一下commit_idx看看是不是有新的待提交的entry
+
+        Args:
+            req(AppendEntryReq): leader发送给follower的append entry日志
+                                 可能是简单的心跳作用
+                                 可能是复制日志作用
+                                 可能是提交日志作用
+                                 具体作用就看请求中的几个字段标识语义就行
+        Returns:
+            None
+        """
         res: AppendEntryResp
         prev_entry: Entry | None = None
         if 0 <= req.prev_log_idx < len(self._role.log):
             prev_entry = self._role.log[req.prev_log_idx]
-        logger.info(f'开始处理')
+        # 作为Follower收到Leader的Append Entries就说明Leader还存活着 他还有统治地位 自己就不要想着竞争选举了 重置计时器
         self._timeout_reset()
         if req.term < self._role.cur_term:
+            # 过期消息
             res = AppendEntryResp(term=self._role.cur_term, succ=False)
         elif prev_entry is None or req.prev_log_term != prev_entry.term:
             res = AppendEntryResp(term=self._role.cur_term, succ=False)
         else:
             if not isinstance(self._role, Follower):
+                # 集群刚选主成功 集群里面只有一个leader跟一群candidate 借着candidate收到Leader的Append Entry请求时机切换角色成Follower
                 self._role_demote_to_follower()
             assert all(x.index + 1 == y.index for x, y in zip(req.entries, req.entries[1:]))
+            # Follower把Leader同步过来的Append Entry保存等待Commit
             [self._role.update_log(entry) for entry in req.entries]
+            # Leader告诉Follower哪些entry已经被集群大多数节点确认 Follower可以提交到状态机了
             if req.leader_commit_idx > self._role.commit_idx:
+                logger.info(f'Leader告诉我的最新可以提交的index={req.leader_commit_idx}')
+                # 有新的追加日志可以提交了 更新commit_idx 等待一会的扫描动作尝试提交
                 self._role.commit_idx = min(req.leader_commit_idx, len(self._role.log) - 1)
             res = AppendEntryResp(term=self._role.cur_term, succ=True)
         return RPC(direction=RPC_Direction.RESPONSE, type=RPC_Type.APPEND_ENTRIES, content=res.json())
@@ -249,23 +280,39 @@ class Server:
         if not isinstance(self._role, Candidate) or not res.vote_granted:
             logger.info(f'自己现在是{self._role} 别人投票结果是{res.vote_granted} 不统计得票了')
             return
+        logger.info('拉到了一个赞同票')
         # 放到得票箱准备统计得票情况
         self._votes.add(sender)
+        logger.info(f'现在总共{len(self._votes)}个赞同票 集群共{len(self.peers)}个节点')
         # 得票过半就晋升leader
         if len(self._votes) * 2 > len(self.peers):
+            logger.info(f'晋升为leader 同步日志到集群')
             self._role_promote_to_leader()
+            # Leader发送Append Entries
             self._rpc_send_append_entries()
             self._timeout_reset(leader=True)
 
     def _rpc_send_append_entries(self) -> None:
+        """
+        Leader的核心功能 对于Leader而言核心就是Append Entries RPC的调用
+        这个调用承载着3个作用
+        1 心跳heartbeat---如果没有新的entry 也会定期发送空的AppendEntries以维持领导地位
+        2 复制日志entry---把客户端请求封装的entry发送出去 等待follower追加
+        3 提交日志commit---告诉follower哪些entry已被集群大多数节点确认并可以提交到状态机
+        """
         if not isinstance(self._role, Leader):
+            # 只有Leader才有资格发送Append Entries double check
             return
         for peer in self.peers:
             if self.id == peer.id: continue
+            # Append Entries req, to send whom
             addr: Address = Address(host=peer.ip, port=peer.port)
+            #
             prev_entry: Entry = self._role.log[self._role.next_idx[addr] - 1]
+            # all entries, leader has sync to follower
             entries: list[Entry] = self._role.log[self._role.next_idx[addr]:]
             self._peers_sent[addr] = len(entries)
+            # leader发送append entries
             self._rpc_send(
                 rpc=RPC(
                     direction=RPC_Direction.REQUEST,
@@ -301,12 +348,12 @@ class Server:
 
     def _role_promote_to_leader(self) -> None:
         """candidate->leader"""
-        logger.info(f'当前角色{self._role}->leader, term is{self._role.cur_term}')
+        logger.info(f'当前角色{self._role}晋升为leader term is{self._role.cur_term}')
         self._role = Leader(**self._role.dict(),
-                            next_idx={Address(host=peer.ip, port=peer.port): len(self._role.log) for peer in
-                                      self.peers},
+                            next_idx={Address(host=peer.ip, port=peer.port): len(self._role.log) for peer in self.peers},
                             match_idx={Address(host=peer.ip, port=peer.port): 0 for peer in self.peers}
                             )
+        # 刚晋升Leader 作为Leader这个角色自然还没有向集群同步过日志 初始化计数都是0
         self._peers_sent = {Address(host=peer.ip, port=peer.port): 0 for peer in self.peers}
 
     def _id(self) -> Address:

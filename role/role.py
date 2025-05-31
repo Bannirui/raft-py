@@ -10,10 +10,15 @@ from util import Address
 class Role(BaseModel):
     _driver: DatabaseDriver = DatabaseDriver()
     cur_term: int = _driver.get_current_term()
+    # 追加日志
+    log: list[Entry] = _driver.get_log()
+    """
+    Leader会通过Append Entry的RPC调用把哪些entry已经被集群大多数节点确认并可以提交的这个index信息告诉Follower
+    追加日志的[0...commit_idx]都是可以提交的
+    """
     commit_idx: NonNegativeInt
     last_idx: NonNegativeInt
     voted_for: Address | None = _driver.get_voted_for()
-    log: list[Entry] = _driver.get_log()
 
     def update_cur_term(self, term: int) -> None:
         """
@@ -60,6 +65,7 @@ class Follower(Role):
 
 class Leader(Role):
     """leader"""
+    #
     next_idx: dict[Address, int]
     match_idx: dict[Address, int]
 

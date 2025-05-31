@@ -8,6 +8,7 @@ class RPC_Direction(IntEnum):
     RESPONSE = 1<<1
 class RPC_Type(IntEnum):
     APPEND_ENTRIES = 1
+    # 拉票请求
     REQUEST_VOTE = 1<<1
     ADD_SERVER = 1<<2
     REMOVE_SERVER = 1<<3

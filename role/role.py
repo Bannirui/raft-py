@@ -37,10 +37,9 @@ class Role(BaseModel):
         self.log = self._driver.set_log(new_entry)
 
     def commit(self):
-        logger.info(f'{self}开始执行提交')
+        logger.info(f'{self}开始执行提交 commit_idx={self.commit_idx} last_idx={self.last_idx}')
         while self.commit_idx > self.last_idx:
             entry = self.log[self.last_idx]
-            logger.info(f'提交{entry}持久化')
             self._driver.set_db(entry.key, entry.value)
             self.last_idx += 1
 

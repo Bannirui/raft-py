@@ -106,6 +106,7 @@ class Server:
         self._role_promote_to_candidate()
         self_sock_addr: Address = self._id()
         self._role.update_voted_for(self_sock_addr)
+        # 得票箱
         self._votes = {self_sock_addr}
         self._timeout_reset()
         # 要socket发送的信息
@@ -135,6 +136,7 @@ class Server:
             logger.error("socket没有初始化 没法发送消息")
         else:
             try:
+                logger.info(f'向{recv}发送消息{rpc}')
                 self.sock.sendto(f"{rpc.json()}\n".encode(), (recv.host, recv.port))
             except Exception as e:
                 logger.error(f"socket发送失败{e}")
@@ -146,13 +148,15 @@ class Server:
             rpc 收到的数据
             sender 谁发来的
         """
+        logger.info(f'主机{self.id}收到{sender.host}:{sender.port}的数据是{rpc} 开始处理')
         try:
             self._role_demote_if_necessary(_CaptureTerm.parse_raw(rpc.content))
             if rpc.direction == RPC_Direction.REQUEST:
-                res: RPC | None = None
+                res: RPC
                 if rpc.type == RPC_Type.APPEND_ENTRIES:
                     res = self._rpc_handle_append_entries_request(AppendEntryReq.parse_raw(rpc.content))
                 elif rpc.type == RPC_Type.REQUEST_VOTE:
+                    # 处理别人拉票
                     res = self._rpc_handle_request_vote_reqeust(VoteReq.parse_raw(rpc.content))
                 else:
                     raise NotImplementedError(f"rpc type={rpc.type}尚不支持")
@@ -207,27 +211,47 @@ class Server:
             self._role.next_idx[sender] -= 1
 
     def _rpc_handle_request_vote_reqeust(self, req: VoteReq) -> RPC:
-        res = VoteResp(term=self._role.cur_term, vote_granted=False)
+        """
+        收到别人的拉票请求
+        自己是leader就果断投反对票 一个集群不允许脑裂
+        自己不是leader就看看对面有没有资格当leader决定自己是投反对票还是赞成票
+        """
+        logger.info(f'收到的拉票请求是{req}')
         last_entry: Entry | None = self._role.log[-1]
         assert last_entry is not None
+        # 反对票
+        res: VoteResp = VoteResp(term=self._role.cur_term, vote_granted=False)
         if isinstance(self._role, Leader):
+            logger.info(f'当前{self.id}是leader 集群中已经有leader 不同意拉票选举')
+            # 投反对票
             return RPC(direction=RPC_Direction.RESPONSE, type=RPC_Type.REQUEST_VOTE, content=res.json())
-        logger.info(f'处理请求')
         self._timeout_reset()
-        at_least_as_up_to_date: bool = req.last_log_term > last_entry.term or (
-                req.last_log_term == last_entry.term and req.last_log_idx >= last_entry.index)
+        # 比较term和log看看对方有没有当leader资格
+        at_least_as_up_to_date: bool = req.last_log_term > last_entry.term or (req.last_log_term == last_entry.term and req.last_log_idx >= last_entry.index)
+        logger.info(f'拉票的人term是{req.term} 自己的term是{self._role.cur_term}')
         if req.term < self._role.cur_term:
+            logger.info('拉票的term太低 反对投票')
             pass
-        elif at_least_as_up_to_date and (
-                self._role.voted_for is None or self._role.voted_for == req.candidate_identity):
+        elif at_least_as_up_to_date and (self._role.voted_for is None or self._role.voted_for == req.candidate_identity):
             self._role.update_voted_for(req.candidate_identity)
+            # 投赞同票
+            logger.info('拉票的term比自己高 投赞同票')
             res = VoteResp(term=self._role.cur_term, vote_granted=True)
         return RPC(direction=RPC_Direction.RESPONSE, type=RPC_Type.REQUEST_VOTE, content=res.json())
 
     def _rpc_handle_request_vote_response(self, res: VoteResp, sender: Address) -> None:
-        logger.info(f'处理响应{res}')
+        """
+        收到了sender的投票结果res
+        可能是反对票
+        可能是赞同票 进行得票统计 看看自己有没有资格当leader
+        """
+        logger.info(f'当前{self._role}收到{sender.host}:{sender.port}的投票结果是{res}')
         if not isinstance(self._role, Candidate) or not res.vote_granted:
+            logger.info(f'自己现在是{self._role} 别人投票结果是{res.vote_granted} 不统计得票了')
             return
+        # 放到得票箱准备统计得票情况
+        self._votes.add(sender)
+        # 得票过半就晋升leader
         if len(self._votes) * 2 > len(self.peers):
             self._role_promote_to_leader()
             self._rpc_send_append_entries()
@@ -276,8 +300,8 @@ class Server:
         self._role = Candidate(**self._role.dict())
 
     def _role_promote_to_leader(self) -> None:
-        """candidator->leader"""
-        logger.info(f'当前角色{self}->leader, term is{self._role.cur_term}')
+        """candidate->leader"""
+        logger.info(f'当前角色{self._role}->leader, term is{self._role.cur_term}')
         self._role = Leader(**self._role.dict(),
                             next_idx={Address(host=peer.ip, port=peer.port): len(self._role.log) for peer in
                                       self.peers},
@@ -324,8 +348,7 @@ class Server:
         data: bytes
         addr: tuple[str, int]
         data, addr = sock.recvfrom(1 << 10)
-        [self.rpc_handle(rpc=RPC.parse_raw(payload), sender=Address(host=addr[0], port=addr[1])) for payload in
-         data.decode().splitlines(keepends=True)]
+        [self.rpc_handle(rpc=RPC.parse_raw(payload), sender=Address(host=addr[0], port=addr[1])) for payload in data.decode().splitlines(keepends=True)]
 
     def _role_demote_if_necessary(self, capture: _CaptureTerm) -> None:
         if capture.term is None or capture.term <= self._role.cur_term:
@@ -336,5 +359,5 @@ class Server:
             self._role_demote_to_follower()
 
     def _role_demote_to_follower(self) -> None:
-        logger.info(f'当前角色{self}->Follower')
+        logger.info(f'当前角色{self._role}->Follower')
         self._role = Follower(**self._role.dict())

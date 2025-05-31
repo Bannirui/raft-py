@@ -15,8 +15,9 @@ class VoteReq(BaseRPC):
     last_log_term: NonNegativeInt
 
 class VoteResp(BaseRPC):
-    """投票选择resp"""
+    """投票选择resp 对别人的拉票作回复"""
     term: NonNegativeInt
+    # 同不同意投票 True做出投票 False不同意投票
     vote_granted: StrictBool
 
 class AppendEntryReq(BaseRPC):

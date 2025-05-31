@@ -1,3 +1,5 @@
+import json
+import os.path
 from pathlib import Path
 from typing import ClassVar
 
@@ -19,9 +21,28 @@ class _State(BaseModel):
     current_term: int
     voted_for: Address | None
 
-
+# json文件的相对目录
 relative = lambda path: Path(__file__).parent / path
 
+def guard_file(path: str, default: dict)->None:
+    """
+    持久化文件可能在项目启动时候不存在 直接用pydantic加载会报错的
+
+    Args:
+        path: 文件路径 绝对路径
+        default: 默认写在文件中的内容作初始化
+    """
+    if os.path.exists(path): return
+    # 创建文件
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # 写入默认内容
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(default, f, indent=4)
+
+# 确保文件文件
+guard_file(relative('json/db.json'), _Database(db={}).model_dump())
+guard_file(relative('json/log.json'), _Log(log=[Entry(index=0, term=0, key="", value="")]).model_dump())
+guard_file(relative('json/state.json'), _State(current_term=0, voted_for=None).model_dump())
 
 class DatabaseDriver(BaseModel):
     """类需要继承BaseModel主要需要pydantic的序列化功能 但是下面这几个成员不作为模型字段 要通过ClassVar声明成类变量"""

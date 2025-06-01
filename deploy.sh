@@ -24,9 +24,11 @@ function cpy_and_run() {
     if [ -f "requirements.txt" ]; then
       python3 -m pip install -r requirements.txt
     fi
-    # start
     echo "启动$target_path"
-    nohup .venv/bin/python main.py --MyId=${1} > "output_$1.log" 2>&1 & echo $! > "pid_$1.txt"
+    # start core
+    nohup .venv/bin/python main.py --MyId=${1} > "core_output_$1.log" 2>&1 & echo $! > "pid_$1.txt"
+    # start client
+    nohup .venv/bin/python client/main.py --MyId=${1} > "core_output_$1.log" 2>&1
   )
 }
 

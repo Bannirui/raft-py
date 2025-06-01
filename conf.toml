@@ -6,18 +6,25 @@ version = "1.0.0"
 timeout_second_lo = 5
 timeout_second_hi = 8
 
+# 节点标识
+my_id=1
+
 # 集群服务器配置 通过启动参数--MyId检索集群配置的id
 [[servers]]
 id=1
 ip = "127.0.0.1"
 port = 9527
+# 服务端口
+data_port = 8081
 
 [[servers]]
 id=2
 ip = "127.0.0.1"
 port = 9528
+data_port = 8022
 
 [[servers]]
 id=3
 ip = "127.0.0.1"
 port = 9529
+data_port = 8083

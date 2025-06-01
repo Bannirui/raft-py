@@ -1,3 +1,4 @@
+from pathlib import Path
 from pydantic import BaseModel
 import tomllib
 
@@ -5,9 +6,14 @@ class ServerConfig(BaseModel):
     """
     集群中每个节点的配置
     """
+    # 节点标识
     id: int
+    # 节点启动的ip
     ip: str
+    # 集群节点间通信端口
     port: int
+    # 集群对外服务端口
+    data_port: int
 
 class ProjConfig(BaseModel):
     """
@@ -18,13 +24,15 @@ class ProjConfig(BaseModel):
     # 集群节点超时
     timeout_second_lo: float
     timeout_second_hi: float
+    # 节点标识
+    my_id: int
 
 class ConfigLoader:
     """
     配置加载器 用于从TOML文件中加载配置信息并封装成结构化对象
     """
 
-    def __init__(self, path:str) -> None:
+    def __init__(self, path: Path | str) -> None:
         """
         构造方法
 

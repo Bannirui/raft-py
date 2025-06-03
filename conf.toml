@@ -4,7 +4,7 @@ version = "1.0.0"
 
 # 节点超时间隔区间[lo...hi]秒
 timeout_second_lo = 5
-timeout_second_hi = 8
+timeout_second_hi = 9
 
 # 节点标识
 my_id=1
@@ -21,7 +21,7 @@ data_port = 8081
 id=2
 ip = "127.0.0.1"
 port = 9528
-data_port = 8022
+data_port = 8082
 
 [[servers]]
 id=3

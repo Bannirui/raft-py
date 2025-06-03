@@ -8,7 +8,7 @@ class BaseRPC(FrozenModel):
     pass
 
 class VoteReq(BaseRPC):
-    """投票选举req"""
+    """选举竞选拉票"""
     term: NonNegativeInt
     candidate_identity: Address
     last_log_idx: NonNegativeInt
@@ -39,3 +39,11 @@ class AppendEntryReq(BaseRPC):
 class AppendEntryResp(BaseRPC):
     term: NonNegativeInt
     succ: StrictBool
+
+class PutDataReq(BaseRPC):
+    """客户端添加数据 请求可能来自客户端的请求 也可能来自集群间转发"""
+    key: str
+    val: str
+class PutDataResp(BaseRPC):
+    """客户端添加数据"""
+    succ: bool

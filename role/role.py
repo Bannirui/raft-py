@@ -11,7 +11,7 @@ class Role(BaseModel):
     _driver: DatabaseDriver = DatabaseDriver()
     cur_term: int = _driver.get_current_term()
     # 追加日志
-    log: list[Entry] = _driver.get_log()
+    logs: list[Entry] = _driver.get_log()
     """
     Leader会通过Append Entry的RPC调用把哪些entry已经被集群大多数节点确认并可以提交的这个index信息告诉Follower
     追加日志的[0...commit_idx]都是可以提交的
@@ -39,12 +39,12 @@ class Role(BaseModel):
             logger.info(f'{self}当前任期{self.cur_term}投票给{voted_for}')
 
     def update_log(self, new_entry: Entry) -> None:
-        self.log = self._driver.set_log(new_entry)
+        self.logs = self._driver.set_log(new_entry)
 
     def commit(self):
         logger.info(f'{self}开始执行提交 commit_idx={self.commit_idx} last_idx={self.last_idx}')
         while self.commit_idx > self.last_idx:
-            entry = self.log[self.last_idx]
+            entry = self.logs[self.last_idx]
             self._driver.set_db(entry.key, entry.value)
             self.last_idx += 1
 

@@ -30,7 +30,7 @@ def main() -> None:
     # 启动的id
     if (my_conf := cluster_server_map.get(my_id)) is None:
         raise ValueError(f"集群配置是{servers} 当前启动的MyId为{my_id}是无效的")
-    with Server(id=my_id, peers=servers) as server:
+    with Server(my_id=my_id, peers=servers) as server:
         server.start()
     logger.info("服务退出")
 

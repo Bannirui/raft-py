@@ -5,11 +5,13 @@ from aiohttp.web_request import Request
 from aiohttp.web_response import Response
 from socket import socket, AF_INET, SOCK_DGRAM, SOL_SOCKET, SO_REUSEADDR
 
-# main不在项目根目录 识别项目根目录里的模块
 import sys
 import os
+
+# main不在项目根目录 识别项目根目录里的模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from db import DatabaseDriver
 from conf import app_cfg, ServerConfig
 from log import logger
 from util import RPC, RPC_Type, RPC_Direction
@@ -44,6 +46,7 @@ def raft_port() -> tuple[str, int, int]:
         return server.ip, server.port, server.data_port
     exit('没有配置data_port')
 
+driver: DatabaseDriver = DatabaseDriver()
 
 routes = web.RouteTableDef()
 
@@ -51,8 +54,9 @@ routes = web.RouteTableDef()
 @routes.get('/raft/get/{key}')
 async def get_key(req: Request) -> Response:
     key: str = req.match_info['key']
-    print(key)
-    return web.json_response({'ret': f'the recv key is {key}'})
+    logger.info(f'客户端要查的key={key}')
+    ret: str = driver.get_db(key)
+    return web.json_response({'ret': ret})
 
 
 @routes.post('/raft/put')

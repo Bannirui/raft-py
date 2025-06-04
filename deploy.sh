@@ -26,9 +26,7 @@ function cpy_and_run() {
     fi
     echo "启动$target_path"
     # start core
-    # nohup .venv/bin/python3 main.py --my_id=${1} > "core_output_$1.log" 2>&1 & echo $! > "pid_$1.txt"
-    # start client
-    # nohup .venv/bin/python3 client/main.py --my_id=${1} > "core_output_$1.log" 2>&1
+    nohup .venv/bin/python3 main.py --my_id=${1} > "core_output_$1.log" 2>&1 & echo $! > "pid_$1.txt"
   )
 }
 

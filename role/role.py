@@ -9,15 +9,17 @@ from util import Address
 
 class Role(BaseModel):
     _driver: DatabaseDriver = DatabaseDriver()
+    # 初始化时保证0-based 默认值0
     cur_term: int = _driver.get_current_term()
     # 缓存的所有的日志条目
     logs: list[Entry] = _driver.get_log()
     """
     Leader会通过Append Entry的RPC调用把哪些entry已经被集群大多数节点确认并可以提交的这个index信息告诉Follower
-    追加日志的[0...commit_idx]都是可以提交的
+    追加日志的(last_commit_idx...commit_idx]都是可以提交的
     """
-    commit_idx: int
-    last_idx: int
+    commit_idx_threshold: int = 0
+    # 已经提交的日志 [0...last_commit_idx]都是已经提交的
+    last_commit_idx: int = -1
     voted_for: Address | None = _driver.get_voted_for()
 
     def update_cur_term(self, term: int) -> None:
@@ -43,26 +45,23 @@ class Role(BaseModel):
         self.logs = self._driver.set_log(new_entry)
 
     def commit(self):
-        """尝试执行日志提交"""
-        logger.info(f'{self}开始执行提交 commit_idx={self.commit_idx} last_idx={self.last_idx}')
-        while self.commit_idx > self.last_idx:
-            entry = self.logs[self.last_idx]
+        """尝试提交日志"""
+        logger.info(f'{self}开始执行提交 commit_idx={self.commit_idx_threshold} last_idx={self.last_commit_idx}')
+        # 待提交的日志(last...threshold]
+        while self.commit_idx_threshold > self.last_commit_idx:
+            entry = self.logs[self.last_commit_idx+1]
+            logger.info(f'将{entry}持久化到db')
             self._driver.set_db(entry.key, entry.value)
-            self.last_idx += 1
-
+            self.last_commit_idx += 1
 
 class Candidate(Role):
-    """candidate"""
-
     def __str__(self):
         return 'Candidate'
 
 
 class Follower(Role):
-    """follower"""
-
     def __str__(self):
-        return 'Follower'
+        return f'Follower(待提交区间({self.last_commit_idx}...{self.commit_idx_threshold}])'
 
 
 class Leader(Role):
@@ -72,4 +71,4 @@ class Leader(Role):
     match_idx: dict[Address, int]
 
     def __str__(self):
-        return 'Leader'
+        return f'Leader(待提交区间({self.last_commit_idx}...{self.commit_idx_threshold}])'

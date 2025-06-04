@@ -24,6 +24,7 @@ class Server:
     节点作为Leader向集群其他节点发送的复制日志数量
     key-the Follower
     val-count for Append Entries which have been sent to Follower
+    每一轮Leader向Follower同步日志时可能是单条 可能是批量 每一轮同步的时候记录向Follower同步了多少条
     """
     _peers_sent: dict[Address, int]
     sock: socket | None = None
@@ -82,29 +83,37 @@ class Server:
         return isinstance(self._role, Leader)
 
     def start_heartbeat(self) -> None:
-        """向follower发送心跳 维持自己leader地位"""
+        """
+        向Follower发送Append Entries 维持自己leader地位
+        语义作用
+        1 发送Leader的心跳
+        2 Leader向Follower的Append Entries
+        """
         # 角色类型检查
         if not isinstance(self._role, Leader):
             return
+        # 集群里面已经收到自己要同步的最小log index 比这个日志大的可能丢了或者Follower异常没回复
         match_indices = self._role.match_idx.values()
-        n: int = min(match_indices)
+        # [0...n]整个集群都同步过 (n...]可能有的节点同步过有的节点没同步过 从已经同步过的最小的index开始考察 看看哪些还没提交 推进Leader的commit标识
+        # 后面Leader向Follower发送Append Entries RPC的时候带上这个信息让Follower开始以此为基准进行提交
+        idx: int = min(match_indices)
         while (
-                len(self._role.logs) > n > self._role.commit_idx
-                and sum(idx >= n for idx in match_indices) * 2 > len(self.peers)
-                and self._role.logs[n].term == self._role.cur_term
+                len(self._role.logs) > idx > self._role.commit_idx # 还没提交
+                and sum(idx >= idx for idx in match_indices) * 2 > len(self.peers) # 过半节点已经同步过idx
+                and self._role.logs[idx].term == self._role.cur_term # 是自己任期同步的日志
         ):
-            self._role.commit_idx = n
-            n += 1
+            self._role.commit_idx = idx
+            idx += 1
         self._rpc_send_append_entries()
         self._timeout_reset(leader=True)
 
     def start_election(self) -> None:
         """Follower超时到了 说明Leader挂了 自己开始竞选Leader"""
-        logger.info(f'节点{self.my_id}开始拉票')
+        logger.info(f'节点{self.my_id}开始拉票 自己的term={self._role.cur_term}')
         if self.sock is None:
             return
         # 切换到candidate
-        self._role.update_cur_term(self._role.cur_term + 1)
+        self._role.update_cur_term(self._role.cur_term + 1 if self._role.cur_term else 0)
         self._role_promote_to_candidate()
         self_sock_addr: Address = self._id()
         self._role.update_voted_for(self_sock_addr)
@@ -118,8 +127,8 @@ class Server:
             content=VoteReq(
                 term=self._role.cur_term,
                 candidate_identity=self_sock_addr,
-                last_log_idx=self._role.logs[-1].index,
-                last_log_term=self._role.logs[-1].term,
+                last_log_idx=self._role.logs[-1].index if self._role.logs else -1,
+                last_log_term=self._role.logs[-1].term if self._role.logs else -1,
             ).json()
         )
         # 自己给自己的投票已经在内存中处理过了 不需要走网路
@@ -144,6 +153,12 @@ class Server:
     def rpc_handle(self, rpc: RPC, sender: Address) -> None:
         """
         收到了来自别人的请求
+        Leader 收到了来自Follower的Append Entries回复
+               收到了来自Candidate的拉票
+               收到了来自客户端的put
+               收到了来自Follower转发的put
+        Follower 收到了来自Leader的Append Entries请求
+                 收到了来自Follower转发的put
         Args:
             rpc 收到的数据
             sender 谁发来的
@@ -152,7 +167,6 @@ class Server:
         try:
             self._role_demote_if_necessary(_CaptureTerm.parse_raw(rpc.content))
             if rpc.direction == RPC_Direction.REQ:
-                res: RPC
                 match rpc.type:
                     case RPC_Type.REQUEST_VOTE:
                         # 处理别人拉票
@@ -210,26 +224,28 @@ class Server:
             None
         """
         res: AppendEntryResp
+        # 收到了Leader的同步 看看自己上一条收到的同步日志
         prev_entry: Entry | None = None
-        if 0 <= req.prev_log_idx < len(self._role.logs):
+        if self._role.logs and 0 <= req.prev_log_idx < len(self._role.logs):
             prev_entry = self._role.logs[req.prev_log_idx]
         # 作为Follower收到Leader的Append Entries就说明Leader还存活着 他还有统治地位 自己就不要想着竞争选举了 重置计时器
         self._timeout_reset()
         if req.term < self._role.cur_term:
             # 过期消息
             res = AppendEntryResp(term=self._role.cur_term, succ=False)
-        elif prev_entry is None or req.prev_log_term != prev_entry.term:
+        elif prev_entry is not None and req.prev_log_term != prev_entry.term:
             res = AppendEntryResp(term=self._role.cur_term, succ=False)
         else:
             if not isinstance(self._role, Follower):
                 # 集群刚选主成功 集群里面只有一个leader跟一群candidate 借着candidate收到Leader的Append Entry请求时机切换角色成Follower
                 self._role_demote_to_follower()
+            # 确保Leader同步过来的日志是严格递增的
             assert all(x.index + 1 == y.index for x, y in zip(req.entries, req.entries[1:]))
             # Follower把Leader同步过来的Append Entry保存等待Commit
             [self._role.update_log(entry) for entry in req.entries]
             # Leader告诉Follower哪些entry已经被集群大多数节点确认 Follower可以提交到状态机了
             if req.leader_commit_idx > self._role.commit_idx:
-                logger.info(f'Leader告诉我的最新可以提交的index={req.leader_commit_idx}')
+                logger.info(f'Leader告诉我的最新可以提交的index={req.leader_commit_idx} 我自己最新的可提交index={self._role.commit_idx}')
                 # 有新的追加日志可以提交了 更新commit_idx 等待一会的扫描动作尝试提交
                 self._role.commit_idx = min(req.leader_commit_idx, len(self._role.logs) - 1)
             res = AppendEntryResp(term=self._role.cur_term, succ=True)
@@ -255,27 +271,36 @@ class Server:
         自己不是leader就看看对面有没有资格当leader决定自己是投反对票还是赞成票
         """
         logger.info(f'收到的拉票请求是{req}')
-        last_entry: Entry | None = self._role.logs[-1]
-        assert last_entry is not None
-        # 反对票
-        res: VoteResp = VoteResp(term=self._role.cur_term, vote_granted=False)
+        # 刚启动初始化时候logs是空的
+        last_entry: Entry | None = self._role.logs[-1] if self._role.logs else None
         if isinstance(self._role, Leader):
             logger.info(f'当前{self.my_id}是leader 集群中已经有leader 不同意拉票选举')
             # 投反对票
-            return RPC(direction=RPC_Direction.RESP, type=RPC_Type.REQUEST_VOTE, content=res.json())
+            return RPC(direction=RPC_Direction.RESP,
+                       type=RPC_Type.REQUEST_VOTE,
+                       content=VoteResp(term=self._role.cur_term, vote_granted=False).json()
+                       )
         self._timeout_reset()
-        # 比较term和log看看对方有没有当leader资格
-        at_least_as_up_to_date: bool = req.last_log_term > last_entry.term or (req.last_log_term == last_entry.term and req.last_log_idx >= last_entry.index)
+        # 自己是Candidate 比较term和log看看对方有没有资格当Leader
+        qualified: bool = ((last_entry is None)
+                                        or (req.last_log_term > last_entry.term)
+                                        or (req.last_log_term == last_entry.term and req.last_log_idx >= last_entry.index)
+                                        )
         logger.info(f'拉票的人term是{req.term} 自己的term是{self._role.cur_term}')
         if req.term < self._role.cur_term:
             logger.info('拉票的term比自己低 投反对票')
-            res = VoteResp(term=self._role.cur_term, vote_granted=False)
-        elif at_least_as_up_to_date and (self._role.voted_for is None or self._role.voted_for == req.candidate_identity):
+            return RPC(direction=RPC_Direction.RESP,
+                       type=RPC_Type.REQUEST_VOTE,
+                       content=VoteResp(term=self._role.cur_term, vote_granted=False).json()
+                       )
+        elif qualified and (self._role.voted_for is None or self._role.voted_for == req.candidate_identity):
             self._role.update_voted_for(req.candidate_identity)
             # 投赞同票
             logger.info('拉票的term比自己高 投赞同票')
-            res = VoteResp(term=self._role.cur_term, vote_granted=True)
-        return RPC(direction=RPC_Direction.RESP, type=RPC_Type.REQUEST_VOTE, content=res.json())
+            return RPC(direction=RPC_Direction.RESP,
+                   type=RPC_Type.REQUEST_VOTE,
+                   content=VoteResp(term=self._role.cur_term, vote_granted=True).json()
+                   )
 
     def _rpc_handle_vote_response(self, res: VoteResp, sender: Address) -> None:
         """
@@ -311,14 +336,24 @@ class Server:
             # 只有Leader才有资格发送Append Entries double check
             return
         for peer in self.peers:
+            # 向集群里面Follower节点同步
             if self.my_id == peer.id: continue
             # Append Entries req, to send whom
             addr: Address = Address(host=peer.ip, port=peer.port)
-            #
-            prev_entry: Entry = self._role.logs[self._role.next_idx[addr] - 1]
-            # all entries, leader has sync to follower
-            entries: list[Entry] = self._role.logs[self._role.next_idx[addr]:]
-            self._peers_sent[addr] = len(entries)
+            prev_log_term: int = -1
+            prev_log_idx: int = -1
+            entries: list[Entry] = []
+            # 没有要同步的日志 Append Entries就退化成单纯的心跳 用来维持自己的Leader地位
+            if self._role.logs:
+                logger.info(f'当前角色{self._role} next_idx={self._role.next_idx} logs={self._role.logs}')
+                # Leader向Follower同步过的最新的日志是哪个
+                prev_log_idx = self._role.next_idx[addr] - 1
+                prev_entry: Entry = self._role.logs[prev_log_idx]
+                prev_log_term = prev_entry.term
+                # 这一轮准备向Follower同步的所有日志
+                entries = self._role.logs[prev_log_idx+1:]
+                # 缓存这一轮向Follower同步了多少条日志
+                self._peers_sent[addr] = len(entries)
             # leader发送append entries
             self._rpc_send(
                 rpc=RPC(
@@ -327,8 +362,8 @@ class Server:
                     content=AppendEntryReq(
                         term=self._role.cur_term,
                         leader_identity=self._id(),
-                        prev_log_idx=self._role.next_idx[addr] - 1,
-                        prev_log_term=prev_entry.term,
+                        prev_log_idx=prev_log_idx,
+                        prev_log_term=prev_log_term,
                         entries=entries,
                         leader_commit_idx=self._role.commit_idx,
                     ).json()
@@ -354,11 +389,16 @@ class Server:
         self._role = Candidate(**self._role.dict())
 
     def _role_promote_to_leader(self) -> None:
-        """candidate->leader"""
-        logger.info(f'当前角色{self._role}晋升为leader term is{self._role.cur_term}')
+        """
+        Candidate->Leader
+        Candidate刚晋升Leader 初始化log指针
+        1 待同步日志
+        2 已同步日志
+        """
+        logger.info(f'当前角色{self._role}晋升为leader term is {self._role.cur_term}')
         self._role = Leader(**self._role.dict(),
                             next_idx={Address(host=peer.ip, port=peer.port): len(self._role.logs) for peer in self.peers},
-                            match_idx={Address(host=peer.ip, port=peer.port): 0 for peer in self.peers}
+                            match_idx={Address(host=peer.ip, port=peer.port): -1 for peer in self.peers}
                             )
         # 刚晋升Leader 作为Leader这个角色自然还没有向集群同步过日志 初始化计数都是0
         self._peers_sent = {Address(host=peer.ip, port=peer.port): 0 for peer in self.peers}
@@ -381,7 +421,7 @@ class Server:
                 # io多路复用
                 readable: list[socket]
                 exceptional: list[socket]
-                # 收到的网络请求 转发过来的客户端存\取 别人的拉票
+                # 收到的网络请求 转发过来的客户端存\取 别人的拉票 Follower的Append Entries回复 Follower的commit回复
                 readable, _, exceptional = select([self.sock], [], [], max(0, self.timeout - time()))
                 logger.info(f"复用器拿到的就绪事件是{len(readable)}个 异常事件{len(exceptional)}个")
                 if self.is_time_out():
@@ -391,6 +431,7 @@ class Server:
                 [self._recv_sock(s) for s in readable]
                 # re-bind
                 [self.open_sock() for s in exceptional if s is self.sock]
+                # 尝试执行日志提交
                 self.commit()
         except KeyboardInterrupt:
             print("服务正常退出")
@@ -415,11 +456,18 @@ class Server:
         [self.rpc_handle(rpc=RPC.parse_raw(payload), sender=Address(host=addr[0], port=addr[1])) for payload in data.decode().splitlines(keepends=True)]
 
     def _role_demote_if_necessary(self, capture: _CaptureTerm) -> None:
+        """
+        从PRC中反序列化出来了term
+        客户端put请求没有term值
+        初始化时term=-1
+        """
+        logger.info(f'RPC的任期{capture} 自己的term={self._role.cur_term}')
         if capture.term is None or capture.term <= self._role.cur_term:
             return
         self._role.update_cur_term(capture.term)
         self._role.update_voted_for(None)
         if not isinstance(self._role, Follower):
+            # Leader收到的RPC出现了比自己大和term Leader降级为Follower
             self._role_demote_to_follower()
 
     def _role_demote_to_follower(self) -> None:
@@ -431,7 +479,7 @@ class Server:
         logger.info("收到来自客户端存数据的请求")
         # Leader直接存到logs里面 等待下一轮的Append Entries同步给Leader
         if isinstance(self._role, Leader):
-            self._role.update_log(Entry(index=len(self._role.logs), term=self._role.cur_term, key=req.key, value=req.val))
+            self._role.update_log(Entry(index=len(self._role.logs) if self._role.logs else 0, term=self._role.cur_term, key=req.key, value=req.val))
             return RPC(direction=RPC_Direction.RESP, type=RPC_Type.CLIENT_PUT)
         # 发布到集群 让Leader节点处理 刨除自己不然区分不出来是client转发过来还是Follower发布过来的
         rpc: RPC = RPC(

@@ -10,14 +10,14 @@ from util import Address
 class Role(BaseModel):
     _driver: DatabaseDriver = DatabaseDriver()
     cur_term: int = _driver.get_current_term()
-    # 追加日志
+    # 缓存的所有的日志条目
     logs: list[Entry] = _driver.get_log()
     """
     Leader会通过Append Entry的RPC调用把哪些entry已经被集群大多数节点确认并可以提交的这个index信息告诉Follower
     追加日志的[0...commit_idx]都是可以提交的
     """
-    commit_idx: NonNegativeInt
-    last_idx: NonNegativeInt
+    commit_idx: int
+    last_idx: int
     voted_for: Address | None = _driver.get_voted_for()
 
     def update_cur_term(self, term: int) -> None:
@@ -39,9 +39,11 @@ class Role(BaseModel):
             logger.info(f'{self}当前任期{self.cur_term}投票给{voted_for}')
 
     def update_log(self, new_entry: Entry) -> None:
+        logger.info(f'开始执行日志持久化 需要存储的entry是{new_entry}')
         self.logs = self._driver.set_log(new_entry)
 
     def commit(self):
+        """尝试执行日志提交"""
         logger.info(f'{self}开始执行提交 commit_idx={self.commit_idx} last_idx={self.last_idx}')
         while self.commit_idx > self.last_idx:
             entry = self.logs[self.last_idx]
@@ -64,9 +66,9 @@ class Follower(Role):
 
 
 class Leader(Role):
-    """leader"""
-    #
+    # 待同步日志 Leader维护待同步给Follower的index 初始时指向logs尾=len(logs)
     next_idx: dict[Address, int]
+    # 已同步日志 Leader已经同步给Follower的index 初始时-1
     match_idx: dict[Address, int]
 
     def __str__(self):

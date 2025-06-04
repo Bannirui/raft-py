@@ -14,7 +14,7 @@ class _Database(BaseModel):
 
 
 class _Log(BaseModel):
-    log: list[Entry]
+    logs: list[Entry]
 
 
 class _State(BaseModel):
@@ -37,11 +37,13 @@ def guard_file(path: str, default: dict)->None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # 写入默认内容
     with open(path, 'w', encoding='utf-8') as f:
-        json.dump(default, f, indent=4)
+        json.dump(default, f)
 
 # 确保文件文件
 guard_file(relative('json/db.json'), _Database(db={}).model_dump())
-guard_file(relative('json/log.json'), _Log(log=[Entry(index=0, term=0, key="", value="")]).model_dump())
+# 初始化时没有Entry日志
+guard_file(relative('json/log.json'), _Log(logs=[]).model_dump())
+# 初始化term=0
 guard_file(relative('json/state.json'), _State(current_term=0, voted_for=None).model_dump())
 
 class DatabaseDriver(BaseModel):
@@ -81,15 +83,15 @@ class DatabaseDriver(BaseModel):
 
     @classmethod
     def get_entry(cls, i: int) -> Entry | None:
-        return cls._log.log[i] if (isinstance(i, int) and 0 <= i < len(cls._log.log)) else None
+        return cls._log.logs[i] if (isinstance(i, int) and 0 <= i < len(cls._log.logs)) else None
 
     @classmethod
     def get_log(cls) -> list[Entry]:
-        return cls._log.log
+        return cls._log.logs
 
     @classmethod
     def last_index(cls) -> int:
-        return len(cls._log.log) - 1
+        return len(cls._log.logs) - 1
 
     @classmethod
     def set_db(cls, key: str, value: str) -> bool:
@@ -116,15 +118,16 @@ class DatabaseDriver(BaseModel):
 
     @classmethod
     def set_log(cls, new_entry: Entry) -> list[Entry]:
-        if isinstance(new_entry, Entry) and 0 < new_entry.index <= len(cls._log.log):
+        # 有效的日志idx肯定是[0...len(logs)]
+        if isinstance(new_entry, Entry) and 0 <= new_entry.index <= len(cls._log.logs):
             existing_entry: Entry = None
-            if new_entry.index < len(cls._log.log):
-                existing_entry = cls._log.log[new_entry.index]
+            if new_entry.index < len(cls._log.logs):
+                existing_entry = cls._log.logs[new_entry.index]
             if existing_entry is None:
-                cls._log.log.append(new_entry)
+                cls._log.logs.append(new_entry)
                 cls._dump_log()
             elif new_entry.term != existing_entry.term:
-                cls._log.log = cls._log.log[:new_entry.index]
-                cls._log.log.append(new_entry)
+                cls._log.logs = cls._log.logs[:new_entry.index]
+                cls._log.logs.append(new_entry)
                 cls._dump_log()
-        return cls._log.log
+        return cls._log.logs

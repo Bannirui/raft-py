@@ -97,6 +97,7 @@ class DatabaseDriver(BaseModel):
     def set_db(cls, key: str, value: str) -> bool:
         if isinstance(key, str) and isinstance(value, str):
             cls._db.db[key] = value
+            cls._dump_db()
             return True
         else:
             return False

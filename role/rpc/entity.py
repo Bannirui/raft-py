@@ -1,10 +1,9 @@
-from pydantic import NonNegativeInt, StrictBool
+from pydantic import NonNegativeInt, StrictBool, BaseModel
 
 from util import Address
-from util.model import FrozenModel
 from db import Entry
 
-class BaseRPC(FrozenModel):
+class BaseRPC(BaseModel):
     pass
 
 class VoteReq(BaseRPC):

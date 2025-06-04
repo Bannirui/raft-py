@@ -15,9 +15,9 @@ class Role(BaseModel):
     logs: list[Entry] = _driver.get_log()
     """
     Leader会通过Append Entry的RPC调用把哪些entry已经被集群大多数节点确认并可以提交的这个index信息告诉Follower
-    追加日志的(last_commit_idx...commit_idx]都是可以提交的
+    追加日志的(last_commit_idx...commit_idx]都是待提交的
     """
-    commit_idx_threshold: int = 0
+    pending_commit_idx_threshold: int = -1
     # 已经提交的日志 [0...last_commit_idx]都是已经提交的
     last_commit_idx: int = -1
     voted_for: Address | None = _driver.get_voted_for()
@@ -46,29 +46,32 @@ class Role(BaseModel):
 
     def commit(self):
         """尝试提交日志"""
-        logger.info(f'{self}开始执行提交 commit_idx={self.commit_idx_threshold} last_idx={self.last_commit_idx}')
+        logger.info(f'{self}开始执行提交')
         # 待提交的日志(last...threshold]
-        while self.commit_idx_threshold > self.last_commit_idx:
+        while self.pending_commit_idx_threshold > self.last_commit_idx:
             entry = self.logs[self.last_commit_idx+1]
             logger.info(f'将{entry}持久化到db')
             self._driver.set_db(entry.key, entry.value)
             self.last_commit_idx += 1
+        logger.info(f'{self}结束提交')
 
 class Candidate(Role):
     def __str__(self):
-        return 'Candidate'
+        return f'Candidate(待提交区间({self.last_commit_idx}...{self.pending_commit_idx_threshold}])'
 
 
 class Follower(Role):
     def __str__(self):
-        return f'Follower(待提交区间({self.last_commit_idx}...{self.commit_idx_threshold}])'
+        return f'Follower(待提交区间({self.last_commit_idx}...{self.pending_commit_idx_threshold}])'
 
 
 class Leader(Role):
-    # 待同步日志 Leader维护待同步给Follower的index 初始时指向logs尾=len(logs)
-    next_idx: dict[Address, int]
-    # 已同步日志 Leader已经同步给Follower的index 初始时-1
-    match_idx: dict[Address, int]
+    # Leader需要发起同步的日志 Leader维护待同步给Follower的index 初始时指向logs尾=len(logs)
+    # [...idx-1]都是已经需要同步的 idx就是准备同步的
+    next_sync_idx: dict[Address, int]
+    # 已经确认同步的日志 Leader已经同步给Follower的index 收到了来自Follower的回复 初始时-1
+    # [...idx]都是已经同步好的
+    confirm_sync_idx: dict[Address, int]
 
     def __str__(self):
-        return f'Leader(待提交区间({self.last_commit_idx}...{self.commit_idx_threshold}])'
+        return f'Leader(待提交区间({self.last_commit_idx}...{self.pending_commit_idx_threshold}])'

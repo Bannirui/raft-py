@@ -37,3 +37,6 @@ class RPC(FrozenModel):
         RPC_Type.CLIENT_QUERY,
     ]
     content: Optional[str] = None
+
+    def __str__(self):
+        return f'RPC类型 {self.direction}-{self.type} 内容{self.content}'

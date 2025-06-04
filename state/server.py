@@ -93,20 +93,20 @@ class Server:
         if not isinstance(self._role, Leader):
             return
         # 集群里面已经收到自己要同步的最小log index 比这个日志大的可能丢了或者Follower异常没回复 初始化时全是-1
-        match_indices = self._role.match_idx.values()
+        cluster_confirm_sync_idxes = self._role.confirm_sync_idx.values()
         # [0...idx]整个集群都同步过
         # (idx...]可能有的节点同步过有的节点没同步过
-        # 从已经同步过的最小的日志开始考察 看看哪些还没提交 推进Leader的commit标识
-        # 后面Leader向Follower发送Append Entries RPC的时候带上这个信息让Follower开始以此为基准进行提交
+        # 从已经同步过的最小的日志开始考察 看看哪些还没提交 推进Leader的commit
+        # 后面Leader向Follower发送Append Entries RPC的时候带上这个信息让Follower开始以此为基准进行提交带着着集群推进commit
         # [ready_commit_idx....)都是可以提交的
-        idx: int = min(match_indices)
+        idx: int = min(cluster_confirm_sync_idxes)
         # 初始化时候是-1 需要特殊处理
         idx = max(idx, 0)
-        while (len(self._role.logs) > idx > self._role.commit_idx_threshold  # 还没提交
-               and sum(idx >= idx for idx in match_indices) * 2 > len(self.peers)  # 过半节点已经同步过idx
+        while (len(self._role.logs) > idx > self._role.pending_commit_idx_threshold  # 还没提交
+               and sum(idx >= idx for idx in cluster_confirm_sync_idxes) * 2 > len(self.peers)  # 过半节点已经同步过idx
                and self._role.logs[idx].term == self._role.cur_term # 是自己任期同步的日志
         ):
-            self._role.commit_idx_threshold = idx
+            self._role.pending_commit_idx_threshold = idx
             idx+=1
         self._rpc_send_append_entries()
         self._timeout_reset(leader=True)
@@ -150,7 +150,7 @@ class Server:
             logger.error("socket没有初始化 没法发送消息")
         else:
             try:
-                logger.info(f'向{recv}发送消息{rpc}')
+                logger.info(f'向{recv.host}:{recv.port}发送消息{rpc}')
                 self.sock.sendto(f"{rpc.json()}\n".encode(), (recv.host, recv.port))
             except Exception as e:
                 logger.error(f"socket发送失败{e}")
@@ -194,7 +194,7 @@ class Server:
                     case RPC_Type.REQUEST_VOTE:
                         self._rpc_handle_vote_resp(VoteResp.parse_raw(rpc.content), sender)
                     case RPC_Type.APPEND_ENTRIES:
-                        self._rpc_handle_append_entries_response(AppendEntryResp.parse_raw(rpc.content), sender)
+                        self._rpc_handle_append_entries_resp(AppendEntryResp.parse_raw(rpc.content), sender)
                     case RPC_Type.CLIENT_QUERY:
                         pass
                     case RPC_Type.CLIENT_PUT | RPC_Type.CLIENT_PUT_FORWARD:
@@ -250,28 +250,32 @@ class Server:
             # Follower把Leader同步过来的Append Entry保存等待Commit
             [self._role.update_log(entry) for entry in req.entries]
             # Leader告诉Follower哪些entry已经被集群大多数节点确认 Follower可以提交到状态机了
-            if req.leader_commit_idx > self._role.commit_idx_threshold:
-                logger.info(f'Leader告诉我的最新可以提交的index={req.leader_commit_idx} 我自己最新的可提交index={self._role.commit_idx_threshold}')
+            if req.leader_commit_idx > self._role.pending_commit_idx_threshold:
+                logger.info(f'Leader告诉我的最新可以提交的index={req.leader_commit_idx} 我自己最新的可提交index={self._role.pending_commit_idx_threshold}')
                 # 有新的追加日志可以提交了 更新commit_idx 等待一会的扫描动作尝试提交
-                self._role.commit_idx_threshold = min(req.leader_commit_idx, len(self._role.logs) - 1)
+                self._role.pending_commit_idx_threshold = min(req.leader_commit_idx, len(self._role.logs) - 1)
             res = AppendEntryResp(term=self._role.cur_term, succ=True)
         return RPC(direction=RPC_Direction.RESP, type=RPC_Type.APPEND_ENTRIES, content=res.json())
 
-    def _rpc_handle_append_entries_response(self, res: AppendEntryResp, sender: Address) -> None:
+    def _rpc_handle_append_entries_resp(self, res: AppendEntryResp, sender: Address) -> None:
         logger.info(f'收到了{sender.host}:{sender.port}的Append Entries的回复 结果是{res.succ}')
         if not isinstance(self._role, Leader) or res.term != self._role.cur_term:
             logger.error(f'当前节点不是Leader 任期对不上 放弃处理这条回复')
             return
         if res.succ:
-            prev_log_idx: int = self._role.next_idx[sender] - 1
-            num_entries: int = self._peers_sent[sender]
-            logger.info(f'Append Entries回复成功 即Follower同步成功 ')
-            if self._role.match_idx[sender] > prev_log_idx + num_entries:
+            # Leader给Follower同步过的上一个日志
+            prev_log_idx: int = self._role.next_sync_idx[sender] - 1
+            # Leader给Follower同步过多少个日志
+            sent_cnt: int = self._peers_sent[sender]
+            logger.info(f'Append Entries回复成功 即Follower同步成功 给{sender.host}:{sender.port}同步的上一个日志是{prev_log_idx} 已经总共给它同步过{sent_cnt}个日志')
+            if self._role.confirm_sync_idx[sender] > prev_log_idx + sent_cnt:
                 pass
             else:
-                self._role.next_idx[sender] = self._role.match_idx[sender] + 1
-        elif self._role.next_idx[sender] > 1:
-            self._role.next_idx[sender] -= 1
+                self._role.confirm_sync_idx[sender] = prev_log_idx + sent_cnt
+            self._role.next_sync_idx[sender] = self._role.confirm_sync_idx[sender] + 1
+        elif self._role.next_sync_idx[sender] > 0:
+            logger.info(f'Append Entries回复失败 即Follower同步失败 ')
+            self._role.next_sync_idx[sender] -= 1
 
     def _rpc_handle_vote_req(self, req: VoteReq) -> RPC:
         """
@@ -279,7 +283,7 @@ class Server:
         自己是leader就果断投反对票 一个集群不允许脑裂
         自己不是leader就看看对面有没有资格当leader决定自己是投反对票还是赞成票
         """
-        logger.info(f'收到的拉票请求是{req}')
+        logger.info(f'收到来自{req.candidate_identity.host}:{req.candidate_identity.port}的拉票请求')
         # 刚启动初始化时候logs是空的
         last_entry: Entry | None = self._role.logs[-1] if self._role.logs else None
         if isinstance(self._role, Leader):
@@ -296,20 +300,15 @@ class Server:
                                         or (req.last_log_term == last_entry.term and req.last_log_idx >= last_entry.index)
                                         )
         logger.info(f'拉票的人term是{req.term} 自己的term是{self._role.cur_term}')
+        res: VoteResp = VoteResp(term=self._role.cur_term, vote_granted=False)
         if req.term < self._role.cur_term:
             logger.info('拉票的term比自己低 投反对票')
-            return RPC(direction=RPC_Direction.RESP,
-                       type=RPC_Type.REQUEST_VOTE,
-                       content=VoteResp(term=self._role.cur_term, vote_granted=False).json()
-                       )
         elif qualified and (self._role.voted_for is None or self._role.voted_for == req.candidate_identity):
             self._role.update_voted_for(req.candidate_identity)
             # 投赞同票
             logger.info('拉票的term比自己高 投赞同票')
-            return RPC(direction=RPC_Direction.RESP,
-                   type=RPC_Type.REQUEST_VOTE,
-                   content=VoteResp(term=self._role.cur_term, vote_granted=True).json()
-                   )
+            res.vote_granted=True
+        return RPC(direction=RPC_Direction.RESP, type=RPC_Type.REQUEST_VOTE, content=res.json())
 
     def _rpc_handle_vote_resp(self, res: VoteResp, sender: Address) -> None:
         """
@@ -354,9 +353,9 @@ class Server:
             entries: list[Entry] = []
             # 没有要同步的日志 Append Entries就退化成单纯的心跳 用来维持自己的Leader地位
             if self._role.logs:
-                logger.info(f'当前角色{self._role} next_idx={self._role.next_idx} logs={self._role.logs}')
+                logger.info(f'当前角色{self._role} next_idx={self._role.next_sync_idx} logs={self._role.logs}')
                 # Leader向Follower同步过的最新的日志是哪个
-                prev_log_idx = self._role.next_idx[addr] - 1
+                prev_log_idx = self._role.next_sync_idx[addr] - 1
                 prev_entry: Entry = self._role.logs[prev_log_idx]
                 prev_log_term = prev_entry.term
                 # 这一轮准备向Follower同步的所有日志
@@ -374,7 +373,7 @@ class Server:
                         prev_log_idx=prev_log_idx,
                         prev_log_term=prev_log_term,
                         entries=entries,
-                        leader_commit_idx=self._role.commit_idx_threshold,
+                        leader_commit_idx=self._role.pending_commit_idx_threshold,
                     ).json()
                 ),
                 recv=addr
@@ -383,6 +382,7 @@ class Server:
     def commit(self) -> None:
         logger.info(f'当前节点角色是{self._role}开始尝试提交日志')
         self._role.commit()
+        logger.info(f'当前节点角色是{self._role}结束提交日志')
 
     def _timeout_reset(self, leader: bool = False) -> None:
         """重置当前节点的超时"""
@@ -406,8 +406,8 @@ class Server:
         """
         logger.info(f'当前角色{self._role}晋升为leader term is {self._role.cur_term}')
         self._role = Leader(**self._role.dict(),
-                            next_idx={Address(host=peer.ip, port=peer.port): len(self._role.logs) for peer in self.peers},
-                            match_idx={Address(host=peer.ip, port=peer.port): -1 for peer in self.peers}
+                            next_sync_idx={Address(host=peer.ip, port=peer.port): len(self._role.logs) for peer in self.peers},
+                            confirm_sync_idx={Address(host=peer.ip, port=peer.port): -1 for peer in self.peers}
                             )
         # 刚晋升Leader 作为Leader这个角色自然还没有向集群同步过日志 初始化计数都是0
         self._peers_sent = {Address(host=peer.ip, port=peer.port): 0 for peer in self.peers}
@@ -426,7 +426,7 @@ class Server:
         logger.info(f"当前节点{self.my_id}启动")
         try:
             while True:
-                logger.info(f"还有{self.timeout - time():.2f}s到期 开始阻塞调用复用器")
+                logger.info(f"开始时间循环 有{self.timeout - time():.2f}s到期 开始阻塞调用复用器")
                 # io多路复用
                 readable: list[socket]
                 exceptional: list[socket]
@@ -442,6 +442,7 @@ class Server:
                 [self.open_sock() for s in exceptional if s is self.sock]
                 # 尝试执行日志提交
                 self.commit()
+                logger.info(f'结束事件循环')
         except KeyboardInterrupt:
             print("服务正常退出")
         except Exception as e:

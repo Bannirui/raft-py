@@ -14,3 +14,6 @@ _Port = Annotated[int, Field(ge=0, le=1<<16)]
 class Address(FrozenModel):
     host: _Host
     port: _Port
+
+    def __str__(self)->str:
+        return f'{self.host}:{self.port}'

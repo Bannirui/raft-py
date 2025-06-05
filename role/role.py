@@ -54,15 +54,17 @@ class Role(BaseModel):
             self._driver.set_db(entry.key, entry.value)
             self.last_commit_idx += 1
         logger.info(f'{self}结束提交')
+    def __str__(self) -> str:
+        return f'待提交区间({self.last_commit_idx}...{self.pending_commit_idx_threshold}]'
 
 class Candidate(Role):
     def __str__(self):
-        return f'Candidate(待提交区间({self.last_commit_idx}...{self.pending_commit_idx_threshold}])'
+        return f'Candidate{super().__str__()}'
 
 
 class Follower(Role):
     def __str__(self):
-        return f'Follower(待提交区间({self.last_commit_idx}...{self.pending_commit_idx_threshold}])'
+        return f'Follower{super().__str__()}'
 
 
 class Leader(Role):
@@ -74,4 +76,4 @@ class Leader(Role):
     confirm_sync_idx: dict[Address, int]
 
     def __str__(self):
-        return f'Leader(待提交区间({self.last_commit_idx}...{self.pending_commit_idx_threshold}])'
+        return f'Leader{super().__str__()}'

@@ -353,7 +353,7 @@ class Server:
             entries: list[Entry] = []
             # 没有要同步的日志 Append Entries就退化成单纯的心跳 用来维持自己的Leader地位
             if self._role.logs:
-                logger.info(f'当前角色{self._role} next_idx={self._role.next_sync_idx} logs={self._role.logs}')
+                logger.info(f'当前角色{self._role} next_sync_idx={self._role.next_sync_idx} logs={self._role.logs}')
                 # Leader向Follower同步过的最新的日志是哪个
                 prev_log_idx = self._role.next_sync_idx[addr] - 1
                 prev_entry: Entry = self._role.logs[prev_log_idx]

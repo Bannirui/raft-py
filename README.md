@@ -12,5 +12,10 @@ pip install -r requirements.txt
 ### 2 QUICK START
 
 ```sh
-python3 main.py --MyId=1
+sudo chmod +x ./deploy.sh
+./deploy.sh
 ```
+
+### 2 PENDING
+
+[TODO LIST](./TODO.md)

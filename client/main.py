@@ -53,10 +53,16 @@ routes = web.RouteTableDef()
 
 @routes.get('/raft/get/{key}')
 async def get_key(req: Request) -> Response:
-    key: str = req.match_info['key']
-    logger.info(f'客户端要查的key={key}')
-    ret: str = driver.get_db(key)
-    return web.json_response({'ret': ret})
+    try:
+        key: str = req.match_info['key']
+        logger.info(f'客户端要查的key={key}')
+        # TODO 文件访问方式 两个进程 core和client访问有问题 core先启动 client后启动读不到文件内容
+        ret: str = ''
+        # ret = driver.get_db(key)
+        return web.json_response({'ret': ret})
+    except Exception as e:
+        logger.error(e)
+        return web.json_response({'ret': 'error', 'msg': str(e)}, status=400)
 
 
 @routes.post('/raft/put')
@@ -82,6 +88,7 @@ async def put_kv(req: Request) -> Response:
         return web.json_response({'ret': 'ok'})
 
     except Exception as e:
+        logger.error(e)
         return web.json_response({'ret': 'error', 'msg': str(e)}, status=400)
 
 

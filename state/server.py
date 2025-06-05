@@ -94,19 +94,23 @@ class Server:
             return
         # 集群里面已经收到自己要同步的最小log index 比这个日志大的可能丢了或者Follower异常没回复 初始化时全是-1
         cluster_confirm_sync_idxes = self._role.confirm_sync_idx.values()
+        logger.info(f'集群节点确认同步的情况{self._role.confirm_sync_idx}')
         # [0...idx]整个集群都同步过
         # (idx...]可能有的节点同步过有的节点没同步过
         # 从已经同步过的最小的日志开始考察 看看哪些还没提交 推进Leader的commit
         # 后面Leader向Follower发送Append Entries RPC的时候带上这个信息让Follower开始以此为基准进行提交带着着集群推进commit
         # [ready_commit_idx....)都是可以提交的
         idx: int = min(cluster_confirm_sync_idxes)
+        logger.info(f'整个集群确认通过的最小日志是{idx}')
         # 初始化时候是-1 需要特殊处理
         idx = max(idx, 0)
+        logger.info(f'整个集群确认通过的最小日志修正后是{idx}')
         while (len(self._role.logs) > idx > self._role.pending_commit_idx_threshold  # 还没提交
                and sum(idx >= idx for idx in cluster_confirm_sync_idxes) * 2 > len(self.peers)  # 过半节点已经同步过idx
                and self._role.logs[idx].term == self._role.cur_term # 是自己任期同步的日志
         ):
             self._role.pending_commit_idx_threshold = idx
+            logger.info(f'调整待提交日志点位为{self._role.pending_commit_idx_threshold}')
             idx+=1
         self._rpc_send_append_entries()
         self._timeout_reset(leader=True)
@@ -266,12 +270,10 @@ class Server:
             # Leader给Follower同步过的上一个日志
             prev_log_idx: int = self._role.next_sync_idx[sender] - 1
             # Leader给Follower同步过多少个日志
-            sent_cnt: int = self._peers_sent[sender]
-            logger.info(f'Append Entries回复成功 即Follower同步成功 给{sender.host}:{sender.port}同步的上一个日志是{prev_log_idx} 已经总共给它同步过{sent_cnt}个日志')
-            if self._role.confirm_sync_idx[sender] > prev_log_idx + sent_cnt:
-                pass
-            else:
-                self._role.confirm_sync_idx[sender] = prev_log_idx + sent_cnt
+            sync_cnt: int = self._peers_sent[sender]
+            logger.info(f'Append Entries回复成功 即Follower同步成功 给{sender.host}:{sender.port}同步的上一个日志是{prev_log_idx} 已经总共给它同步过{sync_cnt}个日志')
+            # 更新同步确认的点位
+            self._role.confirm_sync_idx[sender] = max(self._role.confirm_sync_idx[sender], prev_log_idx+sync_cnt)
             self._role.next_sync_idx[sender] = self._role.confirm_sync_idx[sender] + 1
         elif self._role.next_sync_idx[sender] > 0:
             logger.info(f'Append Entries回复失败 即Follower同步失败 ')
@@ -490,6 +492,15 @@ class Server:
         # Leader直接存到logs里面 等待下一轮的Append Entries同步给Leader
         if isinstance(self._role, Leader):
             self._role.update_log(Entry(index=len(self._role.logs) if self._role.logs else 0, term=self._role.cur_term, key=req.key, value=req.val))
+            # Leader自己节点的同步和同步确认点位更新
+            cur: Address = self._id()
+            # 给Leader自己添加了日志量
+            sync_cnt: int = 1
+            self._peers_sent[cur] = sync_cnt
+            prev_log_idx: int = self._role.next_sync_idx[cur]-1
+            # 更新同步确认的点位
+            self._role.confirm_sync_idx[cur] = max(self._role.confirm_sync_idx[cur], prev_log_idx+sync_cnt)
+            self._role.next_sync_idx[cur] = self._role.confirm_sync_idx[cur] + 1
             # Leader已经接收来自客户端的操作 尝试Append Entries RPC同步给集群Follower
             self.start_heartbeat()
             return RPC(direction=RPC_Direction.RESP, type=RPC_Type.CLIENT_PUT)
@@ -505,9 +516,19 @@ class Server:
     def _rpc_handle_client_put_forward_req(self, req: PutDataReq) -> RPC:
         """集群节点转发过来的客户端的存数据请求"""
         logger.info("收到来自转发的存数据的请求")
+        if not isinstance(self._role, Leader):
+            logger.info(f'当前{self._role}不是Leader 无权处理客户端的put指令')
+            return RPC(direction=RPC_Direction.RESP, type=RPC_Type.CLIENT_PUT_FORWARD, content=PutDataResp(succ=False).json())
         # Leader直接存到logs里面 等待下一轮的Append Entries同步给Leader
-        if isinstance(self._role, Leader):
-            self._role.update_log(Entry(index=len(self._role.logs), term=self._role.cur_term, key=req.key, value=req.val))
-            # 日志已经持久化 触发一次Append Entries RPC
-            self.start_heartbeat()
-        return RPC(direction=RPC_Direction.RESP, type=RPC_Type.CLIENT_PUT_FORWARD, content=None)
+        self._role.update_log(Entry(index=len(self._role.logs), term=self._role.cur_term, key=req.key, value=req.val))
+        # 给Leader自己添加了日志量
+        cur: Address = self._id()
+        sync_cnt: int = 1
+        self._peers_sent[cur] = sync_cnt
+        prev_log_idx: int = self._role.next_sync_idx[cur]-1
+        # 更新同步确认的点位
+        self._role.confirm_sync_idx[cur] = max(self._role.confirm_sync_idx[cur], prev_log_idx+sync_cnt)
+        self._role.next_sync_idx[cur] = self._role.confirm_sync_idx[cur] + 1
+        # 日志已经持久化 触发一次Append Entries RPC
+        self.start_heartbeat()
+        return RPC(direction=RPC_Direction.RESP, type=RPC_Type.CLIENT_PUT_FORWARD, content=PutDataResp(succ=True).json())

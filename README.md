@@ -16,6 +16,6 @@ sudo chmod +x ./deploy.sh
 ./deploy.sh
 ```
 
-### 2 PENDING
+### 3 PENDING
 
 [TODO LIST](./TODO.md)
